@@ -13,6 +13,7 @@ import numpy as np
 import math
 import matplotlib.pyplot as plt
 from scipy.misc import imread, imresize
+import preprocess_utils import preprocess_images
 import time
 
     
@@ -24,7 +25,10 @@ class vgg16_trainable:
         
         self.x  = tf.placeholder(tf.float32, shape=[None, height, width, channel])
         self.y  = tf.placeholder(tf.float32, shape=[None, num_classes])
+        self.istraining = tf.placeholder(tf.bool)
         self.lr = learning_rate
+        self.height= height
+        self.width = width
         self.weights = weights # weights path 
         self.weight_scale = weight_scale
         self.x_mean = x_mean
@@ -239,7 +243,10 @@ class vgg16_trainable:
             if not self.x_mean is None:
                 self.x_mean = tf.constant([123.68, 116.779, 103.939], dtype=tf.float32, shape=[1, 1, 1, 3], name='x_mean')
             images = self.x - self.x_mean
-
+            
+            # central crop, rotate, flip and brightness adjustment for data augmentation.
+            images = preprocess_images(images, self.height, self.width, self.istraining)
+            
         # conv1_1
         with tf.variable_scope('conv1_1') as scope:
             kernel = tf.get_variable('weights', dtype= tf.float32,
