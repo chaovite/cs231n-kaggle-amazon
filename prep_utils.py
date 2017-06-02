@@ -103,7 +103,7 @@ def check_paths(data_root):
             os.makedirs(path)
     return paths
     
-def process_raw_data_train(data_root, train_ratio = 0.9, save_processed_data=True):
+def process_raw_data_train(data_root, train_ratio = 0.9, save_processed_data=True, paths = None):
     """
     process raw training and test data from subfolders of data_root folder.
     train_ratio: the ratio of training data from original data.
@@ -112,8 +112,13 @@ def process_raw_data_train(data_root, train_ratio = 0.9, save_processed_data=Tru
     x_train, y_train
     x_val,   y_val
     """
-    train_csv, test_csv, train_jpg_path, \
-    test_jpg_path, test_jpg_path_a, train_tif_path, test_tif_path= check_paths(data_root)
+    
+    if paths:
+        train_csv, test_csv, train_jpg_path, \
+        test_jpg_path, test_jpg_path_a, train_tif_path, test_tif_path = paths
+    else:
+        train_csv, test_csv, train_jpg_path, \
+            test_jpg_path, test_jpg_path_a, train_tif_path, test_tif_path= check_paths(data_root)
     
     # read in the filenames from training data.
     y, label_list, image_names, _ = read_labels(train_csv)

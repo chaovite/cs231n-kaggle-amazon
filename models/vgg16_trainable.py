@@ -13,22 +13,25 @@ import numpy as np
 import math
 import matplotlib.pyplot as plt
 from scipy.misc import imread, imresize
-
+import time
 
     
 class vgg16_trainable:
     """ A trainable vgg16 model that allow fine tuning the last fc layer."""
 
-    def __init__(self, weights, sess,learning_rate=5e-4, 
+    def __init__(self, weights, sess, learning_rate=5e-4, weight_scale = 1e-5,
                  height=224, width=224, channel=3, num_classes=17, x_mean = None):
         
-        self.x = tf.placeholder(tf.float32, shape=[None, height, width, channel])
-        self.y = tf.placeholder(tf.float32, shape=[None, num_classes])
+        self.x  = tf.placeholder(tf.float32, shape=[None, height, width, channel])
+        self.y  = tf.placeholder(tf.float32, shape=[None, num_classes])
+        self.lr = learning_rate
+        self.weights = weights # weights path 
+        self.weight_scale = weight_scale
         self.x_mean = x_mean
         
         # build neural network architecture.
         self.convlayers()
-        self.fc_layers()
+        self.fc_layers(weight_scale)
         
         # define loss function as binary entropy loss
         loss_el = tf.nn.sigmoid_cross_entropy_with_logits(
@@ -46,17 +49,39 @@ class vgg16_trainable:
             self.load_weights(weights, sess)
         else:
             raise ValueError('Must specify weights file path and sess')
-        self.best_acc = -1
+        self.best_fs = -1
         self.best_model_path = None
+    
+    def reset(self, sess, scale):
+        # fc3 # freeze the weights and bias of all the other layers and only train this fully connected layer.
+        with tf.variable_scope('fc8') as scope:
+            scope.reuse_variables()
+            fc3w = tf.get_variable('weights', dtype= tf.float32)
+            fc3b = tf.get_variable('biases', dtype= tf.float32) 
+            sess.run(fc3w.assign(np.random.normal(loc=0.0, scale=scale, size=(4096,17))))
+            sess.run(fc3b.assign(np.zeros((17,))))
+            print('fc8 variables reset.')
+    
+    def load_weights(self, weight_file, sess):
+        """Assign pretrained weights and biases to all layers from weight_file"""
+        weights = np.load(weight_file)
+        keys = sorted(weights.keys())
+        for i, k in enumerate(keys):
+            if not 'fc8' in k:
+#                print(i, k, np.shape(weights[k]))
+                sess.run(self.parameters[i].assign(weights[k]))
+            else:
+                print('%s is not assigned but initialized' % (k))
 
     def run_model(self, session, Xd, yd, X_val = None, y_val = None,
                   epochs=1, batch_size=64, print_every = 100, training = False, 
                   plot_losses = False, verbose=False, checkpoint_path = None):
         """method for training and evaluation """
         # convert logits to label prediction.
-        y_out      =  logits2y(self.logits, 0.5)
+        y_out      =  logits2y(self.logits)
         
         accuracy, correct_prediction  = correct_tags(self.y, y_out)
+        fs = multi_f_beta_score(self.y, y_out, 2.0)
         
         # shuffle indicies
         train_indicies = np.arange(Xd.shape[0])
@@ -75,14 +100,19 @@ class vgg16_trainable:
         self.validation_acc = []
         self.train_acc = []
         self.losses = []
+        self.train_fscore = []
+        self.val_fscore = []
         
         for e in range(epochs):
             # keep track of losses and accuracy
             correct = 0
             total_loss = 0
+            total_fs   = 0
+            tic_e = time.time()
             # make sure we iterate over the dataset once
             for i in range(int(math.ceil(Xd.shape[0]/batch_size))):
                 # generate indicies for the batch
+                tic_b = time.time()
                 start_idx = (i*batch_size)%Xd.shape[0]
                 idx = train_indicies[start_idx:start_idx+batch_size]
             
@@ -95,40 +125,76 @@ class vgg16_trainable:
                 # have tensorflow compute loss and correct predictions
                 # and (if given) perform a training step
                 loss, corr, _ = session.run(variables,feed_dict=feed_dict)
-            
+                fs_batch      = session.run(fs, feed_dict=feed_dict)
+                total_fs     += fs_batch*batch_size
+
                 # aggregate performance stats
                 self.losses.append(loss*actual_batch_size)
                 total_loss += loss*actual_batch_size
                 correct += np.sum(corr)
+                
+                toc_b = time.time()
             
                 # print every now and then
                 if verbose:
                     if training and (iter_cnt % print_every) == 0:
-                        print("Iteration {0}: with minibatch training loss = {1:.3g} and accuracy of {2:.2g}"\
-                              .format(iter_cnt,loss,np.sum(corr)/actual_batch_size))
+                        print("Iteration {0}: with minibatch training loss = {1:.3g} and accuracy of {2:.2g}, F2 score: {3:f}"\
+                              .format(iter_cnt,loss,np.sum(corr)/actual_batch_size, fs_batch))
+                        print('Elapse time from last print %f' % (toc_b-tic_b))
+                        
                 iter_cnt += 1
             total_correct = correct/Xd.shape[0]
             total_loss = total_loss/Xd.shape[0]
+            total_fs   = total_fs/Xd.shape[0]
+            toc_e = time.time()
 
-            print("Epoch {2}, Overall mean loss = {0:.3g} and training accuracy of {1:.3g}"\
-                  .format(total_loss,total_correct,e+1))
+            print("Epoch {2}, Overall mean loss = {0:.3g} and training accuracy of {1:.3g}, F2 score: {3:f}"\
+                  .format(total_loss,total_correct,e+1, total_fs))
+            print('Elapse time from last epoch %f' % (toc_e-tic_e))
         
             # evaluate the evaluation accuracy.
             is_val = not ((X_val is None) or (y_val is None))
             self.train_acc.append(total_correct)
+            self.train_fscore.append(total_fs)
             
             #saver = tf.train.Saver()
             if is_val:            
-                # create a feed dictionary for evaluation.
-                feed_dict_val = {self.x: X_val,
-                                 self.y: y_val}
-                acc_val = session.run(accuracy,feed_dict=feed_dict_val)
-                print("Epoch %d, validation accuracy of %f"\
-                  % (e+1, acc_val))
-                self.validation_acc.append(acc_val)
+                # run evaluation batch by batch to avoid OOM
+                acc_val = 0
+                fs_val  = 0
+                for i in range(int(math.ceil(X_val.shape[0]/batch_size))):
+                    # generate indicies for the batch
+                    start_idx = (i*batch_size)%X_val.shape[0]
+                    # shuffle indicies
+                    val_indicies = np.arange(X_val.shape[0])
+                    np.random.shuffle(val_indicies)
+                    idx = val_indicies[start_idx:start_idx+batch_size]
+
+                    # create a feed dictionary for this batch
+                    feed_dict_val = {self.x: X_val[idx,:],
+                                 self.y: y_val[idx]}
+                    # get batch size
+                    actual_batch_size = y_val[i:i+batch_size].shape[0]
+                    
+                    acc_val_b, fs_val_b = session.run([accuracy, fs],feed_dict=feed_dict_val)
+                    acc_val += acc_val_b*actual_batch_size
+                    fs_val  +=  fs_val_b*actual_batch_size
+            
+                acc_val = acc_val/X_val.shape[0]
+                fs_val = fs_val/X_val.shape[0]
                 
-                if acc_val > self.best_acc:
-                    self.best_acc = acc_val
+                # create a feed dictionary for evaluation.
+#                feed_dict_val = {self.x: X_val,
+#                                 self.y: y_val}
+#                acc_val, fs_val = session.run([accuracy, fs],feed_dict=feed_dict_val)
+                
+                print("Epoch %d, validation accuracy: %f, F2 score: %f"\
+                  % (e+1, acc_val, fs_val))
+                self.validation_acc.append(acc_val)
+                self.val_fscore.append(fs_val)
+                
+                if fs_val > self.best_fs:
+                    self.best_fs = fs_val
                     if checkpoint_path:
                         save_path = saver.save(sess, checkpoint_path)
                         self.best_model_path = save_path
@@ -142,11 +208,11 @@ class vgg16_trainable:
                 plt.ylabel('minibatch loss')
                 plt.show()
 
-    def predict_tag(self, session, X_test, label_list = None):
+    def predict_tag(self, session, X_test,threshold = 0.235, label_list = None):
     
             
         """This may not work when X_test is too big, consider breaking it into batches"""
-        y_out      =  logits2y(self.logits, 0.5)
+        y_out      =  logits2y(self.logits, threshold= threshold)
         feed_dict_predict = {self.x: X_test,
                              self.y: None}
         y_test     =  session.run(y_out, feed_dict=feed_dict_predict)
@@ -155,9 +221,9 @@ class vgg16_trainable:
             tag_test   =  y2tags(y_test, label_list)
         return y_test, tag_test
         
-    def val_acc(self, session, X_val, y_val):
+    def val_acc(self, session, X_val, y_val, threshold=0.235):
         """evaluate accuracy"""
-        y_out      =  logits2y(self.logits, 0.5)
+        y_out      =  logits2y(self.logits, threshold=threshold)
         acc_v, corrects_v  = correct_tags(self.y, y_out)
         feed_dict = {self.x: X_val,
                      self.y: y_val}
@@ -405,18 +471,18 @@ class vgg16_trainable:
                                padding='SAME',
                                name='pool4')
 
-    def fc_layers(self):
+    def fc_layers(self, weight_scale):
         """Define fully connected layers"""
         # fc1
         with tf.variable_scope('fc6') as scope:
             shape = int(np.prod(self.pool5.get_shape()[1:]))
             
             fc1w = tf.get_variable('weights', dtype= tf.float32,
-                                initializer = tf.truncated_normal([shape, 4096], dtype=tf.float32, stddev=1e-1),
-                                trainable = False)
+                                initializer = tf.truncated_normal([shape, 4096], dtype=tf.float32, stddev=weight_scale),
+                                trainable = True)
             fc1b = tf.get_variable('biases', dtype= tf.float32,
-                                initializer = tf.constant(1.0, shape=[4096], dtype=tf.float32),
-                                trainable = False)
+                                initializer = tf.constant(weight_scale, shape=[4096], dtype=tf.float32),
+                                trainable = True)
             pool5_flat = tf.reshape(self.pool5, [-1, shape])
             fc1l = tf.nn.bias_add(tf.matmul(pool5_flat, fc1w), fc1b)
             self.fc1 = tf.nn.relu(fc1l)
@@ -426,11 +492,11 @@ class vgg16_trainable:
         with tf.variable_scope('fc7') as scope:
         
             fc2w = tf.get_variable('weights', dtype= tf.float32,
-                                initializer = tf.truncated_normal([4096, 4096], dtype=tf.float32, stddev=1e-1),
-                                trainable = False)
+                                initializer = tf.truncated_normal([4096, 4096], dtype=tf.float32, stddev=weight_scale),
+                                trainable = True)
             fc2b = tf.get_variable('biases', dtype= tf.float32,
-                                initializer = tf.constant(1.0, shape=[4096], dtype=tf.float32),
-                                trainable = False)             
+                                initializer = tf.constant(weight_scale, shape=[4096], dtype=tf.float32),
+                                trainable = True)             
             fc2l = tf.nn.bias_add(tf.matmul(self.fc1, fc2w), fc2b)
             
             self.fc2 = tf.nn.relu(fc2l)
@@ -440,10 +506,10 @@ class vgg16_trainable:
         with tf.variable_scope('fc8') as scope:
         
             fc3w = tf.get_variable('weights', dtype= tf.float32,
-                                initializer = tf.truncated_normal([4096, 17], dtype=tf.float32, stddev=1e-5),
+                                initializer = tf.truncated_normal([4096, 17], dtype=tf.float32, stddev = weight_scale),
                                 trainable = True)
             fc3b = tf.get_variable('biases', dtype= tf.float32,
-                                initializer = tf.constant(1e-3, shape=[17], dtype=tf.float32),
+                                initializer = tf.constant(weight_scale, shape=[17], dtype=tf.float32),
                                 trainable = True) 
             
             self.fc3l = tf.nn.bias_add(tf.matmul(self.fc2, fc3w), fc3b)
@@ -456,14 +522,19 @@ class vgg16_trainable:
         keys = sorted(weights.keys())
         for i, k in enumerate(keys):
             if not 'fc8' in k:
-                print(i, k, np.shape(weights[k]))
                 sess.run(self.parameters[i].assign(weights[k]))
             else:
                 print('%s is not assigned but initialized' % (k))
+        
+        vars_train = tf.trainable_variables()
+        names = []
+        for var in vars_train:
+            names.append(var.name)
+        print('trainable variables: ', names)
+                
     
-
 # some utility functions
-def logits2y(logits, threshold):
+def logits2y(logits, threshold=0.235):
     """convert logitst to predictions"""
     p = tf.sigmoid(logits)
     return tf.cast(tf.less(threshold, p), tf.int32)
@@ -476,8 +547,22 @@ def correct_tags(y, y_out):
     wrongs  = tf.reduce_sum(tf.reduce_max(tf.abs(tf.subtract(y, y_out)), 1))
     corrects = tf.subtract(n, wrongs)
     acc     = tf.divide(corrects, n)
-    return acc, corrects    
-    
+    return acc, corrects
+
+def multi_f_beta_score(y, y_out, beta=2.0):
+    """compute mean F_beta score"""
+    eps = 1e-6
+    y = tf.cast(y, tf.float32)
+    y_out = tf.cast(y_out, tf.float32)
+    num_pos = tf.reduce_sum(y_out, axis=1)
+    tp      = tf.reduce_sum(y_out*y,axis=1)
+    num_pos_hat = tf.reduce_sum(y, axis=1)
+    precision = tp/(num_pos+eps)
+    recall    = tp/(num_pos_hat+eps)
+    fs = (1+beta*beta)*precision*recall/(beta*beta*precision+recall+eps)
+    f  = tf.reduce_mean(fs,axis=0)
+    return f
+                
 def y2tags(ys, label_list):
     """
     Use label_list to convert one-hot vector y into tags
