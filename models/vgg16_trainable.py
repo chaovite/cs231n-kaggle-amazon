@@ -20,7 +20,7 @@ import time
 class vgg16_trainable:
     """ A trainable vgg16 model that allow fine tuning the last fc layer."""
 
-    def __init__(self, weights, sess, learning_rate=5e-4, weight_scale = 1e-5,
+    def __init__(self, weights, sess, learning_rate = 1e-2, weight_scale = 1e-4,
                  height=224, width=224, channel=3, num_classes=17, x_mean = None):
         
         self.x  = tf.placeholder(tf.float32, shape=[None, height, width, channel])
@@ -122,7 +122,8 @@ class vgg16_trainable:
             
                 # create a feed dictionary for this batch
                 feed_dict = {self.x: Xd[idx,:],
-                             self.y: yd[idx]}
+                             self.y: yd[idx],
+                             self.istraining: True}
                 # get batch size
                 actual_batch_size = yd[i:i+batch_size].shape[0]
             
@@ -176,7 +177,8 @@ class vgg16_trainable:
 
                     # create a feed dictionary for this batch
                     feed_dict_val = {self.x: X_val[idx,:],
-                                 self.y: y_val[idx]}
+                                     self.y: y_val[idx]，
+                                     self.istraining: False}
                     # get batch size
                     actual_batch_size = y_val[i:i+batch_size].shape[0]
                     
@@ -212,13 +214,14 @@ class vgg16_trainable:
                 plt.ylabel('minibatch loss')
                 plt.show()
 
-    def predict_tag(self, session, X_test,threshold = 0.235, label_list = None):
+    def predict_tag(self, session, X_test, threshold = 0.235, label_list = None, batch_size = 100):
     
             
         """This may not work when X_test is too big, consider breaking it into batches"""
         y_out      =  logits2y(self.logits, threshold= threshold)
         feed_dict_predict = {self.x: X_test,
-                             self.y: None}
+                             self.y: None,
+                             self.istraining: False}
         y_test     =  session.run(y_out, feed_dict=feed_dict_predict)
         tag_test   = None
         if label_list:
@@ -230,7 +233,8 @@ class vgg16_trainable:
         y_out      =  logits2y(self.logits, threshold=threshold)
         acc_v, corrects_v  = correct_tags(self.y, y_out)
         feed_dict = {self.x: X_val,
-                     self.y: y_val}
+                     self.y: y_val,
+                     self.istraining: False }
         variables = [acc_v, corrects_v]
         acc,  corrects =  session.run(variables, feed_dict=feed_dict)
         return acc, corrects
