@@ -20,13 +20,11 @@ def central_crop_images(images, output_height, output_width):
     end_idx_W   = W/2 + output_width/2
     return images[:,start_idx_H: end_idx_H,start_idx_W: end_idx_W, :]
 
-def batch_data_generator_train(X, y, output_height, output_width, batch_size):
+def batch_data_generator_train(X, y, batch_size):
     """ generate a batch of training data and labels, with original dataset.
     Args:
     X: data set [N, height, width, channels]
     y: labels   [N, num_classes]
-    output_height: The height of the image after preprocessing.
-    output_width: The width of the image after preprocessing.
     batch_size: batch size
     
     Returns:

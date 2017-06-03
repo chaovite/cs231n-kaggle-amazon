@@ -13,7 +13,7 @@ import numpy as np
 import math
 import matplotlib.pyplot as plt
 from scipy.misc import imread, imresize
-import preprocess_utils import preprocess_images
+import preprocess_utils import batch_data_generator_train
 import time
 
     
@@ -25,7 +25,6 @@ class vgg16_trainable:
         
         self.x  = tf.placeholder(tf.float32, shape=[None, height, width, channel])
         self.y  = tf.placeholder(tf.float32, shape=[None, num_classes])
-        self.istraining = tf.placeholder(tf.bool)
         self.lr = learning_rate
         self.height= height
         self.width = width
@@ -55,16 +54,6 @@ class vgg16_trainable:
             raise ValueError('Must specify weights file path and sess')
         self.best_fs = -1
         self.best_model_path = None
-    
-    def reset(self, sess, scale):
-        # fc3 # freeze the weights and bias of all the other layers and only train this fully connected layer.
-        with tf.variable_scope('fc8') as scope:
-            scope.reuse_variables()
-            fc3w = tf.get_variable('weights', dtype= tf.float32)
-            fc3b = tf.get_variable('biases', dtype= tf.float32) 
-            sess.run(fc3w.assign(np.random.normal(loc=0.0, scale=scale, size=(4096,17))))
-            sess.run(fc3b.assign(np.zeros((17,))))
-            print('fc8 variables reset.')
     
     def load_weights(self, weight_file, sess):
         """Assign pretrained weights and biases to all layers from weight_file"""
@@ -119,13 +108,13 @@ class vgg16_trainable:
                 tic_b = time.time()
                 start_idx = (i*batch_size)%Xd.shape[0]
                 idx = train_indicies[start_idx:start_idx+batch_size]
-            
+                
+                # generate batch of data with augmentation.
+                x_batch, y_batch = batch_data_generator_train(Xd, yd, batch_size)
+                
                 # create a feed dictionary for this batch
-                feed_dict = {self.x: Xd[idx,:],
-                             self.y: yd[idx],
-                             self.istraining: True}
-                # get batch size
-                actual_batch_size = yd[i:i+batch_size].shape[0]
+                feed_dict = {self.x: x_batch,
+                             self.y: y_batch}
             
                 # have tensorflow compute loss and correct predictions
                 # and (if given) perform a training step
@@ -134,8 +123,8 @@ class vgg16_trainable:
                 total_fs     += fs_batch*batch_size
 
                 # aggregate performance stats
-                self.losses.append(loss*actual_batch_size)
-                total_loss += loss*actual_batch_size
+                self.losses.append(loss*batch_size)
+                total_loss += loss*batch_size
                 correct += np.sum(corr)
                 
                 toc_b = time.time()
@@ -144,7 +133,7 @@ class vgg16_trainable:
                 if verbose:
                     if training and (iter_cnt % print_every) == 0:
                         print("Iteration {0}: with minibatch training loss = {1:.3g} and accuracy of {2:.2g}, F2 score: {3:f}"\
-                              .format(iter_cnt,loss,np.sum(corr)/actual_batch_size, fs_batch))
+                              .format(iter_cnt,loss,np.sum(corr)/batch_size, fs_batch))
                         print('Elapse time from last print %f' % (toc_b-tic_b))
                         
                 iter_cnt += 1
@@ -177,8 +166,7 @@ class vgg16_trainable:
 
                     # create a feed dictionary for this batch
                     feed_dict_val = {self.x: X_val[idx,:],
-                                     self.y: y_val[idx]，
-                                     self.istraining: False}
+                                     self.y: y_val[idx]}
                     # get batch size
                     actual_batch_size = y_val[i:i+batch_size].shape[0]
                     
@@ -189,10 +177,6 @@ class vgg16_trainable:
                 acc_val = acc_val/X_val.shape[0]
                 fs_val = fs_val/X_val.shape[0]
                 
-                # create a feed dictionary for evaluation.
-#                feed_dict_val = {self.x: X_val,
-#                                 self.y: y_val}
-#                acc_val, fs_val = session.run([accuracy, fs],feed_dict=feed_dict_val)
                 
                 print("Epoch %d, validation accuracy: %f, F2 score: %f"\
                   % (e+1, acc_val, fs_val))
@@ -215,13 +199,11 @@ class vgg16_trainable:
                 plt.show()
 
     def predict_tag(self, session, X_test, threshold = 0.235, label_list = None, batch_size = 100):
-    
             
         """This may not work when X_test is too big, consider breaking it into batches"""
         y_out      =  logits2y(self.logits, threshold= threshold)
         feed_dict_predict = {self.x: X_test,
-                             self.y: None,
-                             self.istraining: False}
+                             self.y: None}
         y_test     =  session.run(y_out, feed_dict=feed_dict_predict)
         tag_test   = None
         if label_list:
@@ -233,8 +215,7 @@ class vgg16_trainable:
         y_out      =  logits2y(self.logits, threshold=threshold)
         acc_v, corrects_v  = correct_tags(self.y, y_out)
         feed_dict = {self.x: X_val,
-                     self.y: y_val,
-                     self.istraining: False }
+                     self.y: y_val}
         variables = [acc_v, corrects_v]
         acc,  corrects =  session.run(variables, feed_dict=feed_dict)
         return acc, corrects
@@ -247,9 +228,6 @@ class vgg16_trainable:
             if not self.x_mean is None:
                 self.x_mean = tf.constant([123.68, 116.779, 103.939], dtype=tf.float32, shape=[1, 1, 1, 3], name='x_mean')
             images = self.x - self.x_mean
-            
-            # central crop, rotate, flip and brightness adjustment for data augmentation.
-            images = preprocess_images(images, self.height, self.width, self.istraining)
             
         # conv1_1
         with tf.variable_scope('conv1_1') as scope:
