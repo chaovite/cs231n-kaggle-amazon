@@ -1,6 +1,57 @@
+#### Using keras to preprocess images before feeding into tensorflow model. ###
+
 import tensorflow as tf
 import numpy as np
+from keras.preprocessing.image import ImageDataGenerator
 
+def central_crop_images(images, output_height, output_width):
+    """crop the central part of the images.
+    Args:
+    images: numpy image data, [N, height, width, channels]
+    output_height: The height of the image after preprocessing.
+    output_width: The width of the image after preprocessing.
+    Returns:
+    A cropped images tensor [N, output_height, output_width, channels]
+    """
+    _,H, W,_  = images.shape
+    start_idx_H = H/2 - output_height/2
+    end_idx_H   = H/2 + output_height/2
+    start_idx_W = W/2 - output_width/2
+    end_idx_W   = W/2 + output_width/2
+    return images[:,start_idx_H: end_idx_H,start_idx_W: end_idx_W, :]
+
+def batch_data_generator_train(X, y, output_height, output_width, batch_size):
+    """ generate a batch of training data and labels, with original dataset.
+    Args:
+    X: data set [N, height, width, channels]
+    y: labels   [N, num_classes]
+    output_height: The height of the image after preprocessing.
+    output_width: The width of the image after preprocessing.
+    batch_size: batch size
+    
+    Returns:
+    A batch of transformed data after augmentation [batch_size, output_height, output_width, channels]
+    """
+    datagen = ImageDataGenerator(featurewise_center=False,
+                samplewise_center=False,
+                featurewise_std_normalization=False,
+                samplewise_std_normalization=False,
+                zca_whitening=False,
+                rotation_range = 360,
+                width_shift_range=0.,
+                height_shift_range=0.,
+                shear_range=0.,
+                zoom_range=0.,
+                channel_shift_range=0.,
+                fill_mode='nearest',
+                cval=0.,
+                horizontal_flip=True,
+                vertical_flip=True,
+                rescale=None,
+                preprocessing_function = None,
+                data_format="channels_last")
+    return datagen.flow(X, y, batch_size = batch_size)
+    
 def preprocess_for_train_single_image(image, output_height, output_width):
     """Preprocesses a single image for training.
     Args:
