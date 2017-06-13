@@ -14,10 +14,10 @@ def central_crop_images(images, output_height, output_width):
     A cropped images tensor [N, output_height, output_width, channels]
     """
     _,H, W,_  = images.shape
-    start_idx_H = H/2 - output_height/2
-    end_idx_H   = H/2 + output_height/2
-    start_idx_W = W/2 - output_width/2
-    end_idx_W   = W/2 + output_width/2
+    start_idx_H = H//2 - output_height//2
+    end_idx_H   = H//2 + output_height//2
+    start_idx_W = W//2 - output_width//2
+    end_idx_W   = W//2 + output_width//2
     return images[:,start_idx_H: end_idx_H,start_idx_W: end_idx_W, :]
 
 def batch_data_generator_train(X, y, batch_size):
@@ -28,20 +28,22 @@ def batch_data_generator_train(X, y, batch_size):
     batch_size: batch size
     
     Returns:
-    A batch of transformed data after augmentation [batch_size, output_height, output_width, channels]
+    A batch of transformed data after augmentation [batch_size, height, width, channels]
     """
+    _, height, width, channels = X.shape
+    _, num_classes = y.shape
     datagen = ImageDataGenerator(featurewise_center=False,
                 samplewise_center=False,
                 featurewise_std_normalization=False,
                 samplewise_std_normalization=False,
                 zca_whitening=False,
                 rotation_range = 360,
-                width_shift_range=0.,
-                height_shift_range=0.,
+                width_shift_range=0.15,
+                height_shift_range=0.15,
                 shear_range=0.,
                 zoom_range=0.,
                 channel_shift_range=0.,
-                fill_mode='nearest',
+                fill_mode="nearest",
                 cval=0.,
                 horizontal_flip=True,
                 vertical_flip=True,
@@ -62,7 +64,7 @@ def preprocess_for_train_single_image(image, output_height, output_width):
     rank_assertion = tf.Assert(
     tf.equal(tf.rank(image), 3),
     ['Rank of image must be equal to 3.'])
-    assert(output_height==output_width, 'output_height and output_width must be equal')
+    assert output_height==output_width, 'output_height and output_width must be equal'
     H, W, C = image.get_shape()
     
     # central crop
@@ -103,7 +105,7 @@ def preprocess_for_eval_single_image(image, output_height, output_width):
     rank_assertion = tf.Assert(
     tf.equal(tf.rank(image), 3),
     ['Rank of image must be equal to 3.'])
-    assert(output_height==output_width, 'output_height and output_width must be equal')
+    assert output_height==output_width, 'output_height and output_width must be equal'
     H, W, C = image.get_shape()
     
     # central crop

@@ -7,6 +7,7 @@ import matplotlib.image as mpimg
 import math
 import time
 import skimage.io as io
+import collections
 
 def read_labels(csv_file):
     """
@@ -250,3 +251,163 @@ def y2tags(ys, label_list):
         tag=tag.strip()
         tags.append(tag)
     return tags
+
+
+def multi_f_beta_score_np(y, y_out, beta=2.0):
+    """compute mean F_beta score"""
+    eps = 1e-6
+    y = y.astype(np.float)
+    y_out = y_out.astype(np.float)
+    num_pos = np.sum(y_out, axis=1)
+    tp      = np.sum(y_out*y,axis=1)
+    num_pos_hat = np.sum(y, axis=1)
+    precision = tp/(num_pos+eps)
+    recall    = tp/(num_pos_hat+eps)
+    fs = (1+beta*beta)*precision*recall/(beta*beta*precision+recall+eps)
+    f  = np.mean(fs,axis=0)
+    return f
+
+
+def balance_data(X, y, label_list, top = 5):
+    """Downsample the data with the most frequent tags to balance the dataset
+    Args:
+    X: training data, [num_train, height, width, channels]
+    y: training labels, [num_train, num_class]
+    label_list: a list of unique labels.
+    top: number of most frequenct tags to be downsampled.
+    
+    Return:
+    X_out: [new_num_train, height, width, channels]
+    y_out: [new_num_train, num_class]
+    """
+    tags = y2tags(y, label_list)
+    n = len(tags)
+    c = collections.Counter(tags)
+    tops = c.most_common(top)
+    top_tags, top_counts = zip(*tops)
+    print('20 most common tags:')
+    print(c.most_common(20))
+    num_cut = top_counts[-1]
+    
+    # create booleen array for data not in the top list
+    b_top = []
+    b_none_top = []
+    for tag in tags:
+        if tag in top_tags:
+            b_top.append(True)
+            b_none_top.append(False)
+        else:
+            b_top.append(False)
+            b_none_top.append(True)
+    b_top = np.array(b_top, dtype=np.bool)
+    b_none_top = np.array(b_none_top, dtype=np.bool)
+    
+    X_out = X[b_none_top,:,:,:]
+    y_out = y[b_none_top,:]
+    
+    print('none top data number: %d' % (X_out.shape[0]))
+    
+    # balance the data in the top list.
+    tags_array = np.array(tags,dtype=np.string_)
+    for tag, count in tops:
+        b = []
+        for tagi in tags:
+            if tagi==tag:
+                b.append(True)
+            else:
+                b.append(False)
+        b = np.array(b,dtype=np.bool) 
+                
+        X_tag = X[b,:,:,:]
+        y_tag = y[b,:]
+        mask  = np.random.choice(count, num_cut, replace = False)
+        X_out = np.concatenate((X_out, X_tag[mask,:,:,:]), axis = 0)
+        y_out = np.concatenate((y_out, y_tag[mask,:]), axis = 0)
+    
+    # random permute X and y
+    idx = np.random.permutation(X_out.shape[0])
+    X_out = X_out[idx,:,:,:]
+    y_out = y_out[idx,:]
+    
+    print('Total number of data: %d' % X_out.shape[0])
+    tags = y2tags(y_out, label_list) 
+    c = collections.Counter(tags)
+    print('20 most common tags after balancing the dataset:')
+    print(c.most_common(20))
+    
+    return X_out, y_out
+    
+def deleteTags(X, y, tags_del = [0,1,2,3,4], label_list = None, retain = 0.1):
+    """remove the weather tags and primary tag from the data.
+    Args:
+    X: training data, [N, height, width, channels]
+    y: training labels, [N, num_class]
+    tags_del: a list of tag index to be deleted
+    label_list: a list of unique labels.
+    retrain: the fraction of retained samples with labels all zero.
+    
+    Return:
+    X_out: [new_num_train, height, width, channels]
+    y_out: [new_num_train, num_class]
+    """
+    
+    N, num_class = y.shape
+    mask = np.ones(num_class, dtype=bool)
+    mask[tags_del] = False
+    
+    y_out = y[:, mask]
+    mask_keep = np.sum(y_out,axis=1) > 0
+    mask_del = np.sum(y_out,axis=1) == 0
+    
+    X_del = X[mask_del]
+    y_del = y_out[mask_del]
+
+    y_out = y_out[mask_keep]
+    X_out = X[mask_keep]
+    
+    n = X_out.shape[0]
+    
+    retain_num = np.round(X_del.shape[0]*retain).astype(int)
+    retain_idx = np.random.choice(X_del.shape[0], retain_num, replace=False)
+    
+    X_out = np.concatenate((X_out, X_del[retain_idx]), axis=0)
+    y_out = np.concatenate((y_out, y_del[retain_idx,:]), axis=0)
+    
+    # random permute
+    idx = np.random.permutation(y_out.shape[0])
+    X_out = X_out[idx]
+    y_out = y_out[idx]
+    
+    label_list_new = []
+    if label_list:
+        label_list_new = [i for j, i in enumerate(label_list) if j not in tags_del]
+        
+    return X_out, y_out, label_list_new
+
+def mean_std_batch(x, batch_size = 2000):
+    n          = x.shape[0]
+    indicies   = np.arange(n)
+    sums = np.zeros_like(x[0,...],dtype=np.float32)
+    mean = np.zeros_like(sums)
+    var = np.zeros_like(sums)
+    std = np.zeros_like(sums)
+    tic = time.time()
+    # compute the mean
+    for i in range(int(math.ceil(n/batch_size))):
+        start_idx = (i*batch_size)%n
+        idx = indicies[start_idx:start_idx+batch_size]
+        sums += np.sum(x[idx,...].astype(np.float32),axis=0)
+    mean = sums/n
+    
+    print('done with mean', mean.shape)
+    
+    for i in range(int(math.ceil(n/batch_size))):
+        start_idx = (i*batch_size)%n
+        idx = indicies[start_idx:start_idx+batch_size]
+        var += np.sum((x[idx,...].astype(np.float32) - mean)
+                      *(x[idx,...].astype(np.float32) - mean),axis=0)
+    var = var/n
+    std = np.sqrt(var)
+    print('done with std', std.shape)
+    return mean, std
+    
